@@ -31,6 +31,31 @@ Step-by-step setup instructions for macOS — accessibility, screen recording & 
 
 👉 [**Mac Setup Guide**](https://vibingjustspeakit.github.io/Vibing/installation-guide.html)
 
+## Desktop Prototype
+
+This repository also contains an Electron desktop prototype for the configurable recording workflow: local speech recognition settings, local/cloud rerank models, rewrite models, background operation, automatic clipboard delivery, and a default in-window recording key of **Right Option** on macOS.
+
+```bash
+npm install
+npm start
+```
+
+Build an Apple Silicon DMG:
+
+```bash
+npm run build:dmg
+```
+
+Build a Windows installer locally when the host has the required electron-builder Windows tooling available:
+
+```bash
+npm run build:win
+```
+
+The repository includes a GitHub Actions workflow at `.github/workflows/build-windows.yml` that builds the Windows NSIS installer on `windows-latest` whenever desktop code is pushed to `main`, or manually via `workflow_dispatch`.
+
+The desktop prototype starts in demo mode so the recording -> recognition -> rerank -> rewrite -> automatic paste flow can be tested before a local ASR server is connected. In local ASR mode, Vibing posts recorded audio to the configured endpoint, shows the raw transcript first, then sends the text to the configured rewrite model. The final text is copied and, on macOS with Accessibility permission, pasted into the active foreground input automatically.
+
 ## Key Features
 
 - **Long-Form Voice Input** — Over 5 minutes of continuous speech in a single recording.

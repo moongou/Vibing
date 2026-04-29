@@ -1,0 +1,87 @@
+{
+  "name": "vibing-desktop",
+  "version": "0.1.0",
+  "description": "Vibing desktop prototype for voice capture, speech recognition settings, model routing, and DMG packaging.",
+  "author": "Vibing",
+  "main": "desktop/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "build:dmg": "electron-builder --mac dmg --arm64",
+    "build:win": "electron-builder --win nsis --x64"
+  },
+  "build": {
+    "appId": "app.vibing.desktop",
+    "productName": "Vibing",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "src/logo*.png",
+      "index.html",
+      "hotkeys-demo.html",
+      "installation-guide.html",
+      "images/**/*"
+    ],
+    "extraMetadata": {
+      "main": "desktop/main.js"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "desktop/assets/icon.icns",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Vibing records your voice so it can transcribe, rerank, and rewrite the text you want to type.",
+        "NSSpeechRecognitionUsageDescription": "Vibing can use local speech recognition providers when you enable them in Settings."
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "${productName}-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  }
+}
