@@ -33,7 +33,7 @@ Step-by-step setup instructions for macOS — accessibility, screen recording & 
 
 ## Desktop Prototype
 
-This repository also contains an Electron desktop prototype for the configurable recording workflow: local speech recognition settings, local/cloud rerank models, rewrite models, background operation, automatic clipboard delivery, and a default in-window recording key of **Right Option** on macOS.
+This repository also contains an Electron desktop prototype for the configurable recording workflow: local speech recognition settings, local/cloud rerank models, rewrite models, background operation, automatic clipboard delivery, and a default in-window recording key of **Left Ctrl** on macOS (fully customizable in Settings).
 
 ```bash
 npm install
@@ -54,7 +54,7 @@ npm run build:win
 
 The repository includes a GitHub Actions workflow at `.github/workflows/build-windows.yml` that builds the Windows NSIS installer on `windows-latest` whenever desktop code is pushed to `main`, or manually via `workflow_dispatch`.
 
-The desktop prototype starts in demo mode so the recording -> recognition -> rerank -> rewrite -> automatic paste flow can be tested before a local ASR server is connected. In local ASR mode, Vibing posts recorded audio to the configured endpoint, shows the raw transcript first, then sends the text to the configured rewrite model. The final text is copied and, on macOS with Accessibility permission, pasted into the active foreground input automatically.
+The desktop prototype starts in demo mode so the recording -> recognition -> rerank -> rewrite -> automatic paste flow can be tested before a local ASR server is connected. In local ASR mode, Vibing posts recorded audio to the configured endpoint, shows the raw transcript first, then sends the text to the configured rewrite model (provider / endpoint / model / API key / temperature / system prompt are configurable in Settings). The final text is copied and, on macOS with Accessibility permission, pasted into the active foreground input automatically.
 
 ## Key Features
 

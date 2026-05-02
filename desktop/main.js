@@ -3,13 +3,39 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+const HOTKEY_PRESETS = {
+  ControlLeft: {
+    label: 'Left Ctrl',
+    accelerator: 'Control+Space'
+  },
+  ControlRight: {
+    label: 'Right Ctrl',
+    accelerator: 'Control+Space'
+  },
+  AltRight: {
+    label: 'Right Option',
+    accelerator: 'Alt+Space'
+  },
+  AltLeft: {
+    label: 'Left Option',
+    accelerator: 'Alt+Space'
+  },
+  Space: {
+    label: 'Space',
+    accelerator: 'CommandOrControl+Shift+Space'
+  }
+};
+
+const DEFAULT_RECORD_KEY = 'ControlLeft';
+const DEFAULT_REWRITE_SYSTEM_PROMPT = '你是 Vibing 的后台文本整理模型。请把语音识别原文整理成可以直接粘贴使用的最终文本。保留真实含义，不编造；删除口头禅、无意义信息、重复信息和自我修正残留；表达更精确、有条理、精简。若原文包含多个事项，优先输出编号列表。只输出最终文本，不要解释过程。';
+
 const DEFAULT_SETTINGS = {
   hotkeys: {
     record: {
-      label: 'Right Option',
-      key: 'AltRight',
+      label: 'Left Ctrl',
+      key: DEFAULT_RECORD_KEY,
       mode: 'hold',
-      electronAccelerator: 'Alt+Space'
+      electronAccelerator: HOTKEY_PRESETS[DEFAULT_RECORD_KEY].accelerator
     },
     cancel: {
       label: 'Escape',
@@ -30,11 +56,13 @@ const DEFAULT_SETTINGS = {
   },
   models: {
     rewrite: {
+      enabled: true,
       provider: 'OpenAI compatible',
       endpoint: 'http://127.0.0.1:11434/v1/chat/completions',
       model: 'qwen2.5:14b-instruct',
       apiKey: '',
-      temperature: 0.2
+      temperature: 0.2,
+      systemPrompt: DEFAULT_REWRITE_SYSTEM_PROMPT
     },
     intent: {
       provider: 'local',
@@ -79,6 +107,8 @@ let mainWindow;
 let tray;
 let currentSettings = null;
 let isQuitting = false;
+let rendererReady = false;
+const pendingRecordHotkeyPayloads = [];
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -100,18 +130,35 @@ function deepMerge(base, override) {
   return output;
 }
 
+function defaultAcceleratorForKey(key) {
+  return HOTKEY_PRESETS[key]?.accelerator || HOTKEY_PRESETS[DEFAULT_RECORD_KEY].accelerator;
+}
+
 function keyLabel(key) {
-  if (key === 'AltRight') return 'Right Option';
-  if (key === 'AltLeft') return 'Left Option';
-  return key || 'Right Option';
+  if (HOTKEY_PRESETS[key]) return HOTKEY_PRESETS[key].label;
+  return key || HOTKEY_PRESETS[DEFAULT_RECORD_KEY].label;
 }
 
 function normalizeSettings(settings) {
   const normalized = deepMerge(DEFAULT_SETTINGS, settings || {});
-  if (!normalized.hotkeys.record.electronAccelerator) {
-    normalized.hotkeys.record.electronAccelerator = DEFAULT_SETTINGS.hotkeys.record.electronAccelerator;
+
+  if (!HOTKEY_PRESETS[normalized.hotkeys.record.key]) {
+    normalized.hotkeys.record.key = DEFAULT_RECORD_KEY;
   }
+
+  if (!normalized.hotkeys.record.electronAccelerator || !String(normalized.hotkeys.record.electronAccelerator).trim()) {
+    normalized.hotkeys.record.electronAccelerator = defaultAcceleratorForKey(normalized.hotkeys.record.key);
+  }
+
   normalized.hotkeys.record.label = keyLabel(normalized.hotkeys.record.key);
+
+  normalized.models.rewrite.enabled = normalized.models.rewrite.enabled !== false;
+  normalized.models.rewrite.temperature = Number(normalized.models.rewrite.temperature ?? DEFAULT_SETTINGS.models.rewrite.temperature);
+  if (!Number.isFinite(normalized.models.rewrite.temperature)) {
+    normalized.models.rewrite.temperature = DEFAULT_SETTINGS.models.rewrite.temperature;
+  }
+  normalized.models.rewrite.systemPrompt = String(normalized.models.rewrite.systemPrompt || '').trim() || DEFAULT_REWRITE_SYSTEM_PROMPT;
+
   return normalized;
 }
 
@@ -139,6 +186,7 @@ function iconPath() {
 }
 
 function createWindow() {
+  rendererReady = false;
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
@@ -152,17 +200,27 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
       sandbox: false
     }
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererReady = false;
+  });
+  mainWindow.webContents.on('did-finish-load', flushPendingRecordHotkeys);
   mainWindow.once('ready-to-show', () => showMainWindow());
   mainWindow.on('close', (event) => {
     if (!isQuitting && currentSettings.workflow.runInBackground) {
       event.preventDefault();
       hideMainWindow();
     }
+  });
+  mainWindow.on('closed', () => {
+    rendererReady = false;
+    pendingRecordHotkeyPayloads.length = 0;
+    mainWindow = null;
   });
 }
 
@@ -198,12 +256,17 @@ function setupTray() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const accelerator = currentSettings?.hotkeys?.record?.electronAccelerator || DEFAULT_SETTINGS.hotkeys.record.electronAccelerator;
+  const accelerator = currentSettings?.hotkeys?.record?.electronAccelerator || '未设置';
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Vibing', click: showMainWindow },
     { label: `Record hotkey: ${accelerator}`, enabled: false },
     { type: 'separator' },
-    { label: 'Start / Stop Recording', click: sendRecordHotkey },
+    {
+      label: 'Start / Stop Recording',
+      click: () => {
+        void sendRecordHotkey('tray-menu');
+      }
+    },
     { label: 'Hide to Background', click: hideMainWindow },
     { type: 'separator' },
     {
@@ -216,23 +279,149 @@ function updateTrayMenu() {
   ]));
 }
 
-function sendRecordHotkey() {
+function runAppleScript(lines) {
+  const args = lines.flatMap((line) => ['-e', line]);
+  return new Promise((resolve) => {
+    execFile('/usr/bin/osascript', args, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        stdout: (stdout || '').trim(),
+        error: error ? (stderr || error.message || 'AppleScript failed').trim() : null
+      });
+    });
+  });
+}
+
+async function getFrontmostAppName() {
+  if (process.platform !== 'darwin') return null;
+  const result = await runAppleScript([
+    'tell application "System Events" to get name of first application process whose frontmost is true'
+  ]);
+  if (!result.ok) return null;
+  return result.stdout || null;
+}
+
+function flushPendingRecordHotkeys() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!rendererReady || mainWindow.webContents.isLoading()) return;
+  while (pendingRecordHotkeyPayloads.length) {
+    const payload = pendingRecordHotkeyPayloads.shift();
+    mainWindow.webContents.send('record-hotkey-triggered', payload);
+  }
+}
+
+function queueRecordHotkey(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  pendingRecordHotkeyPayloads.push(payload);
+  flushPendingRecordHotkeys();
+}
+
+async function sendRecordHotkey(source = 'global-shortcut') {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
   }
-  if (mainWindow.webContents.isLoading()) {
-    mainWindow.webContents.once('did-finish-load', () => mainWindow.webContents.send('record-hotkey-triggered'));
-    return;
+
+  const frontmostApp = await getFrontmostAppName();
+  queueRecordHotkey({
+    source,
+    triggeredAt: Date.now(),
+    frontmostApp: frontmostApp && frontmostApp !== 'Vibing' ? frontmostApp : null
+  });
+}
+
+function registerRecordAccelerator(accelerator) {
+  return globalShortcut.register(accelerator, () => {
+    void sendRecordHotkey('global-shortcut');
+  });
+}
+
+function normalizeAccelerator(value) {
+  return String(value || '').trim();
+}
+
+function validateGlobalAccelerator(accelerator) {
+  const candidate = normalizeAccelerator(accelerator);
+  if (!candidate) {
+    return {
+      ok: false,
+      available: false,
+      validFormat: false,
+      reason: 'empty',
+      message: '请输入全局热键组合。'
+    };
   }
-  mainWindow.webContents.send('record-hotkey-triggered');
+
+  const active = normalizeAccelerator(currentSettings?.hotkeys?.record?.electronAccelerator);
+  if (active && active === candidate && globalShortcut.isRegistered(active)) {
+    return {
+      ok: true,
+      available: true,
+      validFormat: true,
+      reason: 'current',
+      message: '当前组合键已被 Vibing 使用。'
+    };
+  }
+
+  const shouldRestoreActive = Boolean(active && globalShortcut.isRegistered(active));
+  if (shouldRestoreActive) {
+    globalShortcut.unregister(active);
+  }
+
+  let registered = false;
+  try {
+    registered = globalShortcut.register(candidate, () => {});
+  } catch (error) {
+    if (shouldRestoreActive) {
+      const restored = registerRecordAccelerator(active);
+      if (!restored) {
+        console.warn(`Could not restore accelerator after validation failure: ${active}`);
+      }
+    }
+    return {
+      ok: false,
+      available: false,
+      validFormat: false,
+      reason: 'invalid',
+      message: `热键格式无效：${error.message || 'unknown error'}`
+    };
+  }
+
+  if (registered) {
+    globalShortcut.unregister(candidate);
+  }
+
+  if (shouldRestoreActive) {
+    const restored = registerRecordAccelerator(active);
+    if (!restored) {
+      console.warn(`Could not restore accelerator after validation: ${active}`);
+    }
+  }
+
+  if (!registered) {
+    return {
+      ok: true,
+      available: false,
+      validFormat: true,
+      reason: 'occupied',
+      message: '该组合键可能被系统或其他应用占用，请更换。'
+    };
+  }
+
+  return {
+    ok: true,
+    available: true,
+    validFormat: true,
+    reason: 'available',
+    message: '该组合键可注册。'
+  };
 }
 
 function registerConfiguredShortcut(settings) {
   globalShortcut.unregisterAll();
-  const accelerator = settings.hotkeys.record.electronAccelerator;
+  const accelerator = normalizeAccelerator(settings.hotkeys.record.electronAccelerator);
   if (!accelerator) return;
 
-  const registered = globalShortcut.register(accelerator, sendRecordHotkey);
+  const registered = registerRecordAccelerator(accelerator);
   if (!registered) {
     console.warn(`Could not register accelerator: ${accelerator}`);
   }
@@ -297,14 +486,118 @@ function rewriteTranscript(text, settings) {
 }
 
 function rewritePrompt(text) {
-  return [
-    '你是 Vibing 的后台文本整理模型。请把语音识别原文整理成可以直接粘贴使用的最终文本。',
-    '要求：保留真实含义，不编造；删除口头禅、无意义信息、重复信息和自我修正残留；表达更精确、有条理、精简。',
-    '如果原文包含多个事项、步骤、需求或清单，请优先整理为编号列表。',
-    '只输出整理后的最终文本，不要解释处理过程。',
-    '',
-    `原始识别文本：\n${text}`
-  ].join('\n');
+  return `原始识别文本：\n${text}`;
+}
+
+function normalizeProvider(provider) {
+  const value = String(provider || '').toLowerCase();
+  if (value.includes('anthropic')) return 'anthropic';
+  if (value.includes('gemini')) return 'gemini';
+  return 'openai-compatible';
+}
+
+function rewriteSystemPrompt(rewrite) {
+  return String(rewrite.systemPrompt || '').trim() || DEFAULT_REWRITE_SYSTEM_PROMPT;
+}
+
+async function requestOpenAICompatibleRewrite(promptText, rewrite) {
+  if (!rewrite.endpoint) return null;
+  const headers = { 'content-type': 'application/json' };
+  if (rewrite.apiKey) headers.authorization = `Bearer ${rewrite.apiKey}`;
+
+  const response = await fetch(rewrite.endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: rewrite.model,
+      temperature: Number(rewrite.temperature || 0.2),
+      messages: [
+        { role: 'system', content: rewriteSystemPrompt(rewrite) },
+        { role: 'user', content: promptText }
+      ]
+    })
+  });
+
+  if (!response.ok) throw new Error(`rewrite endpoint returned ${response.status}`);
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() || data.text?.trim() || null;
+}
+
+async function requestAnthropicRewrite(promptText, rewrite) {
+  const endpoint = rewrite.endpoint || 'https://api.anthropic.com/v1/messages';
+  if (!rewrite.apiKey) throw new Error('Anthropic provider requires API key.');
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': rewrite.apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model: rewrite.model,
+      temperature: Number(rewrite.temperature || 0.2),
+      max_tokens: 1200,
+      system: rewriteSystemPrompt(rewrite),
+      messages: [
+        { role: 'user', content: promptText }
+      ]
+    })
+  });
+
+  if (!response.ok) throw new Error(`rewrite endpoint returned ${response.status}`);
+  const data = await response.json();
+  if (!Array.isArray(data.content)) return null;
+  return data.content.map((part) => part?.text || '').join('').trim() || null;
+}
+
+function buildGeminiEndpoint(rewrite) {
+  let endpoint = String(rewrite.endpoint || '').trim();
+  if (!endpoint) {
+    endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(rewrite.model)}:generateContent`;
+  } else if (!endpoint.includes(':generateContent')) {
+    const trimmed = endpoint.replace(/\/$/, '');
+    if (trimmed.includes('/models/')) {
+      endpoint = `${trimmed}:generateContent`;
+    } else if (trimmed.endsWith('/v1beta')) {
+      endpoint = `${trimmed}/models/${encodeURIComponent(rewrite.model)}:generateContent`;
+    } else {
+      endpoint = `${trimmed}/v1beta/models/${encodeURIComponent(rewrite.model)}:generateContent`;
+    }
+  }
+
+  if (rewrite.apiKey && !/[?&]key=/.test(endpoint)) {
+    endpoint += `${endpoint.includes('?') ? '&' : '?'}key=${encodeURIComponent(rewrite.apiKey)}`;
+  }
+  return endpoint;
+}
+
+async function requestGeminiRewrite(promptText, rewrite) {
+  const endpoint = buildGeminiEndpoint(rewrite);
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: rewriteSystemPrompt(rewrite) }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: promptText }]
+        }
+      ],
+      generationConfig: {
+        temperature: Number(rewrite.temperature || 0.2)
+      }
+    })
+  });
+
+  if (!response.ok) throw new Error(`rewrite endpoint returned ${response.status}`);
+  const data = await response.json();
+  const parts = data.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return null;
+  return parts.map((part) => part?.text || '').join('').trim() || null;
 }
 
 async function requestLocalTranscription(payload, settings) {
@@ -335,27 +628,19 @@ async function requestLocalTranscription(payload, settings) {
 
 async function requestRewriteModel(text, settings) {
   const rewrite = settings.models.rewrite;
-  if (!rewrite.endpoint || !rewrite.model) return null;
+  if (!rewrite.enabled || !rewrite.model) return null;
+
+  const promptText = rewritePrompt(text);
+  const provider = normalizeProvider(rewrite.provider);
 
   try {
-    const headers = { 'content-type': 'application/json' };
-    if (rewrite.apiKey) headers.authorization = `Bearer ${rewrite.apiKey}`;
-    const response = await fetch(rewrite.endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model: rewrite.model,
-        temperature: Number(rewrite.temperature || 0.2),
-        messages: [
-          { role: 'system', content: 'You rewrite speech transcripts into concise, structured, paste-ready text.' },
-          { role: 'user', content: rewritePrompt(text) }
-        ]
-      })
-    });
-
-    if (!response.ok) throw new Error(`rewrite endpoint returned ${response.status}`);
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content?.trim() || data.text?.trim() || null;
+    if (provider === 'anthropic') {
+      return await requestAnthropicRewrite(promptText, rewrite);
+    }
+    if (provider === 'gemini') {
+      return await requestGeminiRewrite(promptText, rewrite);
+    }
+    return await requestOpenAICompatibleRewrite(promptText, rewrite);
   } catch (error) {
     console.warn(`Rewrite model fallback: ${error.message}`);
     return null;
@@ -383,24 +668,26 @@ async function rewriteText(payload) {
     mode: modelText ? 'model' : 'heuristic-fallback',
     finalText,
     modelRoute: {
-      rewrite: settings.models.rewrite.model,
+      rewrite: `${settings.models.rewrite.provider}/${settings.models.rewrite.model}`,
       localRerank: settings.models.localRerank.enabled ? settings.models.localRerank.model : 'disabled',
       cloudRerank: settings.models.cloudRerank.enabled ? settings.models.cloudRerank.model : 'disabled'
     }
   };
 }
 
-function osascriptPaste() {
-  return new Promise((resolve) => {
-    execFile('/usr/bin/osascript', [
-      '-e',
-      'delay 0.08',
-      '-e',
-      'tell application "System Events" to keystroke "v" using command down'
-    ], (error) => {
-      resolve({ pasted: !error, error: error ? error.message : null });
-    });
-  });
+async function osascriptPaste(targetApp) {
+  const scriptLines = [];
+  if (targetApp) {
+    const appName = String(targetApp).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    scriptLines.push(`tell application "${appName}" to activate`);
+    scriptLines.push('delay 0.12');
+  } else {
+    scriptLines.push('delay 0.08');
+  }
+  scriptLines.push('tell application "System Events" to keystroke "v" using command down');
+
+  const result = await runAppleScript(scriptLines);
+  return { pasted: result.ok, error: result.error };
 }
 
 async function deliverText(payload) {
@@ -417,24 +704,31 @@ async function deliverText(payload) {
     return { copied: true, pasted: false, error: 'Automatic paste is currently implemented for macOS.' };
   }
 
-  return { copied: true, ...(await osascriptPaste()) };
+  const targetApp = payload.targetApp && payload.targetApp !== 'Vibing' ? payload.targetApp : null;
+  return { copied: true, ...(await osascriptPaste(targetApp)) };
 }
 
 async function processAudio(payload) {
   const transcription = await transcribeAudio(payload);
   const rewrite = await rewriteText({ rawTranscript: transcription.rawTranscript, settings: payload.settings });
-  const delivery = await deliverText({ text: rewrite.finalText, settings: payload.settings });
+  const delivery = await deliverText({ text: rewrite.finalText, settings: payload.settings, targetApp: payload.targetApp });
   return { ...transcription, ...rewrite, ...delivery };
 }
 
 ipcMain.handle('settings:load', () => loadSettings());
 ipcMain.handle('settings:save', (_event, settings) => saveSettings(settings));
+ipcMain.handle('hotkey:validate-global-accelerator', (_event, accelerator) => validateGlobalAccelerator(accelerator));
 ipcMain.handle('workflow:transcribe-audio', (_event, payload) => transcribeAudio(payload));
 ipcMain.handle('workflow:rewrite-text', (_event, payload) => rewriteText(payload));
 ipcMain.handle('workflow:deliver-text', (_event, payload) => deliverText(payload));
 ipcMain.handle('workflow:process-audio', (_event, payload) => processAudio(payload));
 ipcMain.handle('workflow:copy', (_event, text) => {
   clipboard.writeText(text || '');
+  return true;
+});
+ipcMain.handle('app:renderer-ready', () => {
+  rendererReady = true;
+  flushPendingRecordHotkeys();
   return true;
 });
 ipcMain.handle('app:hide-window', () => {

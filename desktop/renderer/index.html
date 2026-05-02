@@ -26,8 +26,8 @@
 
       <div class="hotkey-card">
         <span>默认录音键</span>
-        <strong id="hotkey-label">Right Option</strong>
-        <small>窗口内可用右侧 Option。后台运行时使用全局热键 <b id="global-hotkey-label">Alt+Space</b> 开始/停止录音。</small>
+        <strong id="hotkey-label">Left Ctrl</strong>
+        <small>窗口内可用左侧 Ctrl。后台运行时使用全局热键 <b id="global-hotkey-label">Control+Space</b> 开始/停止录音。</small>
       </div>
     </aside>
 
@@ -36,7 +36,7 @@
         <header class="page-header">
           <div>
             <p class="eyebrow">Capture -> recognize -> rerank -> rewrite</p>
-            <h1>按住 Right Option，说完松开。</h1>
+            <h1 id="recording-title">按住 Left Ctrl，说完松开。</h1>
             <p class="lead">录音结束后先显示原始识别文本，再交给后台模型整理、精简、去重，并自动复制和粘贴回当前输入位置。</p>
           </div>
           <div class="header-actions">
@@ -53,7 +53,7 @@
                 <span></span><span></span><span></span><span></span><span></span>
               </div>
               <strong id="record-state">待命</strong>
-              <small id="record-hint">按住 Right Option 或点击按钮开始录音</small>
+              <small id="record-hint">按住 Left Ctrl 或点击按钮开始录音</small>
             </div>
             <div class="record-actions">
               <button class="primary-action" id="record-button">开始录音</button>
@@ -66,7 +66,7 @@
               <span>01</span>
               <div>
                 <strong>录音捕获</strong>
-                <small>Right Option 默认 hold-to-record</small>
+                <small id="pipeline-hotkey-hint">Left Ctrl 按住录音，松开识别</small>
               </div>
             </div>
             <div class="pipeline-step" data-step="asr">
@@ -131,12 +131,14 @@
             <div class="section-title-row">
               <div>
                 <h2>录音热键</h2>
-                <p>默认设为右侧 Option，也就是 macOS 的 Right Option / AltRight。</p>
+                <p>默认设为左侧 Ctrl（ControlLeft），可自行改成 Option、Space 或其他全局组合键。</p>
               </div>
             </div>
             <div class="form-row three">
               <label>录音键
                 <select name="hotkeys.record.key">
+                  <option value="ControlLeft">Left Ctrl</option>
+                  <option value="ControlRight">Right Ctrl</option>
                   <option value="AltRight">Right Option</option>
                   <option value="AltLeft">Left Option</option>
                   <option value="Space">Space</option>
@@ -149,8 +151,16 @@
                 </select>
               </label>
               <label>后台全局热键
-                <input name="hotkeys.record.electronAccelerator" placeholder="Alt+Space">
+                <input name="hotkeys.record.electronAccelerator" placeholder="Control+Space">
               </label>
+            </div>
+            <div class="hotkey-capture-row">
+              <button class="ghost-action capture-hotkey-btn" id="capture-record-key" type="button">按一下键，自动设置录音键</button>
+              <small class="capture-hotkey-state" id="capture-record-key-state">支持 Left/Right Ctrl、Left/Right Option、Space。设置后请点“保存设置”。</small>
+            </div>
+            <div class="hotkey-capture-row">
+              <button class="ghost-action capture-hotkey-btn" id="capture-global-hotkey" type="button">按组合键，自动设置全局热键</button>
+              <small class="capture-hotkey-state" id="capture-global-hotkey-state">示例：Control+Space、Command+Shift+R。请至少包含一个修饰键。</small>
             </div>
           </section>
 
@@ -208,7 +218,10 @@
           </section>
 
           <section class="settings-section">
-            <h2>改写模型</h2>
+            <h2>AI 整理模型</h2>
+            <div class="toggle-row single">
+              <label><input type="checkbox" name="models.rewrite.enabled"> 启用 AI 模型整理（关闭后使用本地规则）</label>
+            </div>
             <label>供应商
               <select name="models.rewrite.provider">
                 <option value="OpenAI compatible">OpenAI compatible</option>
@@ -227,6 +240,12 @@
             </label>
             <label>API Key
               <input name="models.rewrite.apiKey" type="password" autocomplete="off">
+            </label>
+            <label>Temperature
+              <input name="models.rewrite.temperature" type="number" step="0.1" min="0" max="2">
+            </label>
+            <label>System Prompt
+              <textarea class="settings-textarea" name="models.rewrite.systemPrompt" rows="4" placeholder="定义 AI 如何整理口语转写文本"></textarea>
             </label>
           </section>
 

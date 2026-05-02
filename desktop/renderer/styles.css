@@ -482,6 +482,42 @@ select {
   color: var(--ink);
 }
 
+.settings-section .settings-textarea {
+  min-height: 112px;
+  resize: vertical;
+  background: #fffaf1;
+}
+
+.hotkey-capture-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.capture-hotkey-btn.capturing {
+  border-color: rgba(46, 111, 216, 0.45);
+  background: var(--blue-soft);
+}
+
+.capture-hotkey-state {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.capture-hotkey-state.success {
+  color: var(--green);
+}
+
+.capture-hotkey-state.warning {
+  color: var(--orange);
+}
+
+.capture-hotkey-state.error {
+  color: #bf4b2f;
+}
+
 .form-row {
   display: grid;
   gap: 14px;
