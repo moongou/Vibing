@@ -114,6 +114,17 @@
             </div>
           </div>
         </section>
+
+        <div class="live-preview-stack" aria-live="polite">
+          <div class="live-preview-box raw" id="raw-preview-box">
+            <div class="preview-title">识别原文</div>
+            <div class="preview-text" id="raw-preview-text">等待识别结果...</div>
+          </div>
+          <div class="live-preview-box rerank" id="rerank-preview-box">
+            <div class="preview-title">重排结果</div>
+            <div class="preview-text" id="rerank-preview-text">等待重排输出...</div>
+          </div>
+        </div>
       </section>
 
       <section class="view-panel" id="view-settings">
@@ -225,18 +236,21 @@
             <label>供应商
               <select name="models.rewrite.provider">
                 <option value="OpenAI compatible">OpenAI compatible</option>
-                <option value="Ollama">Ollama</option>
+                <option value="Ollama">Ollama 本地</option>
                 <option value="LM Studio">LM Studio</option>
                 <option value="OpenAI">OpenAI</option>
                 <option value="Anthropic">Anthropic</option>
                 <option value="Gemini">Gemini</option>
+                <option value="SiliconFlow">硅基流动 SiliconFlow</option>
+                <option value="Alibaba Bailian">阿里百炼</option>
               </select>
             </label>
             <label>模型名称
-              <input name="models.rewrite.model">
+              <input name="models.rewrite.model" placeholder="切换供应商后自动填入">
             </label>
             <label>Endpoint
-              <input name="models.rewrite.endpoint">
+              <input name="models.rewrite.endpoint" placeholder="切换供应商后自动填入">
+              <small class="provider-hint" id="rewrite-provider-hint"></small>
             </label>
             <label>API Key
               <input name="models.rewrite.apiKey" type="password" autocomplete="off">
@@ -274,11 +288,19 @@
             <div class="toggle-row single">
               <label><input type="checkbox" name="models.localRerank.enabled"> 启用本地重排</label>
             </div>
+            <label>供应商
+              <select name="models.localRerank.provider">
+                <option value="Ollama Local">Ollama 本地</option>
+                <option value="Sentence Transformers">Sentence Transformers</option>
+                <option value="Custom Local">自定义本地服务</option>
+              </select>
+            </label>
             <label>本地模型
-              <input name="models.localRerank.model">
+              <input name="models.localRerank.model" placeholder="切换供应商后自动填入">
             </label>
             <label>本地重排服务
-              <input name="models.localRerank.endpoint">
+              <input name="models.localRerank.endpoint" placeholder="切换供应商后自动填入">
+              <small class="provider-hint" id="local-rerank-provider-hint"></small>
             </label>
             <label>Top K
               <input name="models.localRerank.topK" type="number" min="1" max="20">
@@ -292,17 +314,18 @@
             </div>
             <label>供应商
               <select name="models.cloudRerank.provider">
-                <option value="Cohere">Cohere</option>
-                <option value="Voyage AI">Voyage AI</option>
-                <option value="Jina AI">Jina AI</option>
+                <option value="SiliconFlow">硅基流动 SiliconFlow</option>
+                <option value="Alibaba Bailian">阿里百炼</option>
+                <option value="Ollama Cloud">Ollama 云端</option>
                 <option value="OpenAI compatible">OpenAI compatible</option>
               </select>
             </label>
             <label>模型名称
-              <input name="models.cloudRerank.model">
+              <input name="models.cloudRerank.model" placeholder="切换供应商后自动填入">
             </label>
             <label>Endpoint
-              <input name="models.cloudRerank.endpoint">
+              <input name="models.cloudRerank.endpoint" placeholder="切换供应商后自动填入">
+              <small class="provider-hint" id="cloud-rerank-provider-hint"></small>
             </label>
             <label>API Key
               <input name="models.cloudRerank.apiKey" type="password" autocomplete="off">

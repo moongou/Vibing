@@ -16,6 +16,30 @@ const state = {
 };
 
 const SUPPORTED_RECORD_KEYS = new Set(['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'Space']);
+
+const PROVIDER_PRESETS = {
+  rewrite: {
+    'OpenAI compatible': { endpoint: '', model: '', hint: '请填入兼容 OpenAI 格式的服务地址' },
+    'Ollama':            { endpoint: 'http://127.0.0.1:11434/v1/chat/completions', model: 'qwen2.5:14b-instruct', hint: 'Ollama 本地服务（默认端口 11434）' },
+    'LM Studio':         { endpoint: 'http://127.0.0.1:1234/v1/chat/completions', model: 'qwen2.5-14b-instruct', hint: 'LM Studio 本地服务（默认端口 1234）' },
+    'OpenAI':            { endpoint: 'https://api.openai.com/v1/chat/completions', model: 'gpt-4o', hint: 'OpenAI 官方 API，需填入 API Key' },
+    'Anthropic':         { endpoint: 'https://api.anthropic.com/v1/messages', model: 'claude-opus-4-5', hint: 'Anthropic Claude API，需填入 API Key' },
+    'Gemini':            { endpoint: '', model: 'gemini-2.0-flash', hint: 'Endpoint 可留空，需填入 Google API Key' },
+    'SiliconFlow':       { endpoint: 'https://api.siliconflow.cn/v1/chat/completions', model: 'Qwen/Qwen2.5-72B-Instruct', hint: '硅基流动，需填入 API Key' },
+    'Alibaba Bailian':   { endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'qwen-max', hint: '阿里百炼 DashScope，需填入 API Key' }
+  },
+  localRerank: {
+    'Ollama Local':          { endpoint: 'http://127.0.0.1:11434/v1/chat/completions', model: 'BAAI/bge-reranker-v2-m3', hint: 'Ollama 本地服务，需提前拉取对应模型' },
+    'Sentence Transformers': { endpoint: 'http://127.0.0.1:8001/rerank', model: 'BAAI/bge-reranker-v2-m3', hint: 'Sentence Transformers rerank 服务' },
+    'Custom Local':          { endpoint: '', model: '', hint: '自定义本地服务，请手动填写地址' }
+  },
+  cloudRerank: {
+    'SiliconFlow':       { endpoint: 'https://api.siliconflow.cn/v1/chat/completions', model: 'BAAI/bge-reranker-v2-m3', hint: '硅基流动 — 支持 BGE 系列重排，需填入 API Key' },
+    'Alibaba Bailian':   { endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', model: 'gte-rerank-v2', hint: '阿里百炼 GTE 重排，需填入 DashScope API Key' },
+    'Ollama Cloud':      { endpoint: 'http://your-ollama-server:11434/v1/chat/completions', model: 'BAAI/bge-reranker-v2-m3', hint: '远程 Ollama 服务，请替换为实际服务器地址' },
+    'OpenAI compatible': { endpoint: '', model: '', hint: '兼容 OpenAI 格式的重排服务，请手动填写地址' }
+  }
+};
 const HOTKEY_CAPTURE_MODES = {
   recordKey: 'record-key',
   globalAccelerator: 'global-accelerator'
@@ -34,6 +58,11 @@ const fieldTypes = new Map([
   ['models.localRerank.enabled', 'boolean'],
   ['models.cloudRerank.enabled', 'boolean']
 ]);
+
+const previewTimers = {
+  raw: null,
+  rerank: null
+};
 
 function getPath(object, path) {
   return path.split('.').reduce((value, key) => (value ? value[key] : undefined), object);
@@ -95,9 +124,9 @@ function updateRoutes() {
   $('#runtime-mode').textContent = settings.speechRecognition.runtimeMode === 'local' ? 'Local ASR' : 'Demo mode';
   $('#asr-route').textContent = `${settings.speechRecognition.local.scheme} / ${settings.speechRecognition.language}`;
   $('#rerank-route').textContent = settings.models.localRerank.enabled
-    ? settings.models.localRerank.model
+    ? `${settings.models.localRerank.provider} / ${settings.models.localRerank.model}`
     : settings.models.cloudRerank.enabled
-      ? settings.models.cloudRerank.model
+      ? `${settings.models.cloudRerank.provider} / ${settings.models.cloudRerank.model}`
       : 'rerank disabled';
   $('#rewrite-route').textContent = `${settings.models.rewrite.provider} / ${settings.models.rewrite.model}`;
 }
@@ -143,6 +172,43 @@ function setRecordVisual(recording, label, hint) {
   $('#record-state').textContent = label;
   $('#record-hint').textContent = hint;
   $('#record-button').textContent = recording ? '停止并识别' : '开始录音';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function showLivePreview(kind, text, holdMs = 1800) {
+  const boxId = kind === 'raw' ? '#raw-preview-box' : '#rerank-preview-box';
+  const textId = kind === 'raw' ? '#raw-preview-text' : '#rerank-preview-text';
+  const box = $(boxId);
+  const textNode = $(textId);
+  if (!box || !textNode) return;
+
+  textNode.textContent = String(text || '').trim() || (kind === 'raw' ? '识别中...' : '重排中...');
+  box.classList.add('visible');
+
+  if (previewTimers[kind]) {
+    clearTimeout(previewTimers[kind]);
+  }
+
+  if (holdMs > 0) {
+    previewTimers[kind] = setTimeout(() => {
+      box.classList.remove('visible');
+      previewTimers[kind] = null;
+    }, holdMs);
+  }
+}
+
+function hideLivePreview(kind) {
+  const boxId = kind === 'raw' ? '#raw-preview-box' : '#rerank-preview-box';
+  const box = $(boxId);
+  if (!box) return;
+  if (previewTimers[kind]) {
+    clearTimeout(previewTimers[kind]);
+    previewTimers[kind] = null;
+  }
+  box.classList.remove('visible');
 }
 
 function isHotkeyCaptureActive() {
@@ -447,23 +513,28 @@ async function finishRecording() {
   });
 
   $('#raw-output').value = transcription.rawTranscript;
+  showLivePreview('raw', transcription.rawTranscript, 2600);
   $('#copy-state').textContent = '原文已生成，后台正在整理...';
   setPipelineStep('rerank');
 
-  const rewrite = await window.vibing.rewriteText({
+  const rewrite = await window.vibing.rerankText({
     rawTranscript: transcription.rawTranscript,
     settings: state.settings
   });
 
   setPipelineStep('rewrite');
   $('#final-output').value = rewrite.finalText;
-  $('#copy-state').textContent = '整理完成，正在自动粘贴...';
+  showLivePreview('rerank', rewrite.finalText, 900);
+  $('#copy-state').textContent = '重排完成，0.5 秒后将自动投递到当前光标位置...';
+  await sleep(500);
   setPipelineStep('deliver');
 
   const delivery = await window.vibing.deliverText({
     text: rewrite.finalText,
     settings: state.settings,
-    targetApp
+    targetApp,
+    forceClipboard: true,
+    forceAutoPaste: true
   });
 
   if (delivery.pasted) {
@@ -473,6 +544,8 @@ async function finishRecording() {
   } else {
     $('#copy-state').textContent = '已生成，自动复制已关闭';
   }
+  hideLivePreview('raw');
+  hideLivePreview('rerank');
   state.deliveryTargetApp = null;
   setRecordVisual(false, '处理完成', '可继续下一段，或隐藏到后台使用全局热键');
 }
@@ -564,6 +637,41 @@ function bindHotkeys() {
   });
 }
 
+function bindProviderPresets() {
+  const groups = [
+    { selectName: 'models.rewrite.provider', endpointName: 'models.rewrite.endpoint', modelName: 'models.rewrite.model', hintId: 'rewrite-provider-hint', group: 'rewrite' },
+    { selectName: 'models.localRerank.provider', endpointName: 'models.localRerank.endpoint', modelName: 'models.localRerank.model', hintId: 'local-rerank-provider-hint', group: 'localRerank' },
+    { selectName: 'models.cloudRerank.provider', endpointName: 'models.cloudRerank.endpoint', modelName: 'models.cloudRerank.model', hintId: 'cloud-rerank-provider-hint', group: 'cloudRerank' }
+  ];
+
+  groups.forEach(({ selectName, endpointName, modelName, hintId, group }) => {
+    const providerSelect = $(`select[name="${selectName}"]`);
+    if (!providerSelect) return;
+
+    providerSelect.addEventListener('change', () => {
+      const preset = PROVIDER_PRESETS[group]?.[providerSelect.value];
+      if (!preset) return;
+
+      const endpointInput = $(`input[name="${endpointName}"]`);
+      const modelInput = $(`input[name="${modelName}"]`) || $(`select[name="${modelName}"]`);
+      const hintEl = $(`#${hintId}`);
+
+      if (endpointInput && preset.endpoint !== undefined) {
+        endpointInput.value = preset.endpoint;
+        if (state.settings) setPath(state.settings, endpointName, preset.endpoint);
+      }
+      if (modelInput && preset.model) {
+        modelInput.value = preset.model;
+        if (state.settings) setPath(state.settings, modelName, preset.model);
+      }
+      if (hintEl) {
+        hintEl.textContent = preset.hint || '';
+        hintEl.style.opacity = preset.hint ? '1' : '0';
+      }
+    });
+  });
+}
+
 function bindActions() {
   $('#record-button').addEventListener('click', () => {
     if (state.isRecording) {
@@ -626,6 +734,7 @@ async function init() {
   bindActions();
   bindHotkeys();
   void validateGlobalHotkeyValue(state.settings.hotkeys.record.electronAccelerator, { showChecking: false });
+  bindProviderPresets();
   await window.vibing.markRendererReady();
 }
 

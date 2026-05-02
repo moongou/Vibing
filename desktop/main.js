@@ -74,16 +74,16 @@ const DEFAULT_SETTINGS = {
     },
     localRerank: {
       enabled: true,
-      provider: 'sentence-transformers',
+      provider: 'Ollama Local',
       model: 'BAAI/bge-reranker-v2-m3',
-      endpoint: 'http://127.0.0.1:8001/rerank',
+      endpoint: 'http://127.0.0.1:11434/v1/chat/completions',
       topK: 4
     },
     cloudRerank: {
       enabled: false,
-      provider: 'Cohere',
-      model: 'rerank-v3.5',
-      endpoint: 'https://api.cohere.com/v2/rerank',
+      provider: 'SiliconFlow',
+      model: 'BAAI/bge-reranker-v2-m3',
+      endpoint: 'https://api.siliconflow.cn/v1/chat/completions',
       apiKey: ''
     }
   },
@@ -158,6 +158,18 @@ function normalizeSettings(settings) {
     normalized.models.rewrite.temperature = DEFAULT_SETTINGS.models.rewrite.temperature;
   }
   normalized.models.rewrite.systemPrompt = String(normalized.models.rewrite.systemPrompt || '').trim() || DEFAULT_REWRITE_SYSTEM_PROMPT;
+
+  normalized.models.localRerank.provider = String(normalized.models.localRerank.provider || DEFAULT_SETTINGS.models.localRerank.provider);
+  normalized.models.localRerank.endpoint = String(normalized.models.localRerank.endpoint || '').trim() || DEFAULT_SETTINGS.models.localRerank.endpoint;
+  normalized.models.localRerank.model = String(normalized.models.localRerank.model || '').trim() || DEFAULT_SETTINGS.models.localRerank.model;
+  normalized.models.localRerank.topK = Number(normalized.models.localRerank.topK ?? DEFAULT_SETTINGS.models.localRerank.topK);
+  if (!Number.isFinite(normalized.models.localRerank.topK) || normalized.models.localRerank.topK < 1) {
+    normalized.models.localRerank.topK = DEFAULT_SETTINGS.models.localRerank.topK;
+  }
+
+  normalized.models.cloudRerank.provider = String(normalized.models.cloudRerank.provider || DEFAULT_SETTINGS.models.cloudRerank.provider);
+  normalized.models.cloudRerank.endpoint = String(normalized.models.cloudRerank.endpoint || '').trim() || DEFAULT_SETTINGS.models.cloudRerank.endpoint;
+  normalized.models.cloudRerank.model = String(normalized.models.cloudRerank.model || '').trim() || DEFAULT_SETTINGS.models.cloudRerank.model;
 
   return normalized;
 }
@@ -489,6 +501,18 @@ function rewritePrompt(text) {
   return `原始识别文本：\n${text}`;
 }
 
+function rerankPrompt(text) {
+  return [
+    '请将以下语音识别原文做结构化整理：',
+    '1) 保持原意，不编造事实；',
+    '2) 删除口头禅、重复和自我修正残留；',
+    '3) 语句精炼，输出可直接粘贴发送；',
+    '4) 如果包含多个事项，优先用编号列表。',
+    '',
+    `原文：\n${text}`
+  ].join('\n');
+}
+
 function normalizeProvider(provider) {
   const value = String(provider || '').toLowerCase();
   if (value.includes('anthropic')) return 'anthropic';
@@ -521,6 +545,66 @@ async function requestOpenAICompatibleRewrite(promptText, rewrite) {
   if (!response.ok) throw new Error(`rewrite endpoint returned ${response.status}`);
   const data = await response.json();
   return data.choices?.[0]?.message?.content?.trim() || data.text?.trim() || null;
+}
+
+async function requestOpenAICompatibleRerank(promptText, rerankSettings) {
+  if (!rerankSettings.endpoint || !rerankSettings.model) return null;
+  const headers = { 'content-type': 'application/json' };
+  if (rerankSettings.apiKey) headers.authorization = `Bearer ${rerankSettings.apiKey}`;
+
+  const response = await fetch(rerankSettings.endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: rerankSettings.model,
+      temperature: 0.1,
+      messages: [
+        { role: 'system', content: 'You are a transcript reranking model. Output only cleaned final text.' },
+        { role: 'user', content: promptText }
+      ]
+    })
+  });
+
+  if (!response.ok) throw new Error(`rerank endpoint returned ${response.status}`);
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim() || data.text?.trim() || null;
+}
+
+function buildRerankRoute(settings) {
+  if (settings.models.cloudRerank.enabled) {
+    return {
+      mode: 'cloud',
+      provider: settings.models.cloudRerank.provider,
+      model: settings.models.cloudRerank.model,
+      endpoint: settings.models.cloudRerank.endpoint,
+      apiKey: settings.models.cloudRerank.apiKey
+    };
+  }
+
+  if (settings.models.localRerank.enabled) {
+    return {
+      mode: 'local',
+      provider: settings.models.localRerank.provider,
+      model: settings.models.localRerank.model,
+      endpoint: settings.models.localRerank.endpoint,
+      apiKey: ''
+    };
+  }
+
+  return null;
+}
+
+async function requestRerankModel(text, settings) {
+  const route = buildRerankRoute(settings);
+  if (!route) return null;
+
+  try {
+    const promptText = rerankPrompt(text);
+    return await requestOpenAICompatibleRerank(promptText, route);
+  } catch (error) {
+    console.warn(`Rerank model fallback: ${error.message}`);
+    return null;
+  }
 }
 
 async function requestAnthropicRewrite(promptText, rewrite) {
@@ -662,15 +746,18 @@ async function transcribeAudio(payload) {
 
 async function rewriteText(payload) {
   const settings = normalizeSettings(payload.settings || currentSettings);
-  const modelText = await requestRewriteModel(payload.rawTranscript, settings);
+  const rerankedText = await requestRerankModel(payload.rawTranscript, settings);
+  const modelText = rerankedText || await requestRewriteModel(payload.rawTranscript, settings);
   const finalText = modelText || rewriteTranscript(payload.rawTranscript, settings);
+  const rerankRoute = buildRerankRoute(settings);
   return {
-    mode: modelText ? 'model' : 'heuristic-fallback',
+    mode: rerankedText ? 'rerank-model' : modelText ? 'rewrite-model' : 'heuristic-fallback',
     finalText,
     modelRoute: {
       rewrite: `${settings.models.rewrite.provider}/${settings.models.rewrite.model}`,
-      localRerank: settings.models.localRerank.enabled ? settings.models.localRerank.model : 'disabled',
-      cloudRerank: settings.models.cloudRerank.enabled ? settings.models.cloudRerank.model : 'disabled'
+      rerank: rerankRoute ? `${rerankRoute.provider}/${rerankRoute.model}` : 'disabled',
+      localRerank: settings.models.localRerank.enabled ? `${settings.models.localRerank.provider}/${settings.models.localRerank.model}` : 'disabled',
+      cloudRerank: settings.models.cloudRerank.enabled ? `${settings.models.cloudRerank.provider}/${settings.models.cloudRerank.model}` : 'disabled'
     }
   };
 }
@@ -693,10 +780,13 @@ async function osascriptPaste(targetApp) {
 async function deliverText(payload) {
   const settings = normalizeSettings(payload.settings || currentSettings);
   const text = payload.text || '';
-  const shouldCopy = settings.workflow.copyToClipboard || settings.workflow.autoPaste || settings.workflow.autoPasteToFrontmost;
+  const forceClipboard = Boolean(payload.forceClipboard);
+  const forceAutoPaste = Boolean(payload.forceAutoPaste);
+  const canAutoPasteToFrontmost = forceAutoPaste || settings.workflow.autoPasteToFrontmost;
+  const shouldCopy = forceClipboard || settings.workflow.copyToClipboard || settings.workflow.autoPaste || settings.workflow.autoPasteToFrontmost;
   if (shouldCopy) clipboard.writeText(text);
 
-  if (!settings.workflow.autoPaste || !settings.workflow.autoPasteToFrontmost) {
+  if (!(forceAutoPaste || settings.workflow.autoPaste) || !canAutoPasteToFrontmost) {
     return { copied: shouldCopy, pasted: false, error: null };
   }
 
@@ -711,7 +801,13 @@ async function deliverText(payload) {
 async function processAudio(payload) {
   const transcription = await transcribeAudio(payload);
   const rewrite = await rewriteText({ rawTranscript: transcription.rawTranscript, settings: payload.settings });
-  const delivery = await deliverText({ text: rewrite.finalText, settings: payload.settings, targetApp: payload.targetApp });
+  const delivery = await deliverText({
+    text: rewrite.finalText,
+    settings: payload.settings,
+    targetApp: payload.targetApp,
+    forceClipboard: true,
+    forceAutoPaste: true
+  });
   return { ...transcription, ...rewrite, ...delivery };
 }
 
@@ -719,6 +815,7 @@ ipcMain.handle('settings:load', () => loadSettings());
 ipcMain.handle('settings:save', (_event, settings) => saveSettings(settings));
 ipcMain.handle('hotkey:validate-global-accelerator', (_event, accelerator) => validateGlobalAccelerator(accelerator));
 ipcMain.handle('workflow:transcribe-audio', (_event, payload) => transcribeAudio(payload));
+ipcMain.handle('workflow:rerank-text', (_event, payload) => rewriteText(payload));
 ipcMain.handle('workflow:rewrite-text', (_event, payload) => rewriteText(payload));
 ipcMain.handle('workflow:deliver-text', (_event, payload) => deliverText(payload));
 ipcMain.handle('workflow:process-audio', (_event, payload) => processAudio(payload));

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('vibing', {
   saveSettings: (settings) => ipcRenderer.invoke('settings:save', settings),
   validateGlobalHotkey: (accelerator) => ipcRenderer.invoke('hotkey:validate-global-accelerator', accelerator),
   transcribeAudio: (payload) => ipcRenderer.invoke('workflow:transcribe-audio', payload),
+  rerankText: (payload) => ipcRenderer.invoke('workflow:rerank-text', payload),
   rewriteText: (payload) => ipcRenderer.invoke('workflow:rewrite-text', payload),
   deliverText: (payload) => ipcRenderer.invoke('workflow:deliver-text', payload),
   processAudio: (payload) => ipcRenderer.invoke('workflow:process-audio', payload),
